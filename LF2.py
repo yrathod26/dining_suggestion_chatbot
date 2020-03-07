@@ -1,109 +1,110 @@
 import json
-import argparse
-import pprint
-import requests
-import sys
-import urllib
-import datetime
 import boto3
+import requests
 
-from boto3.dynamodb.conditions import Key, Attr
-from botocore.exceptions import ClientError
-from ast import literal_eval
 
 def lambda_handler(event, context):
-    
-	# Configuration for recieving message from SQS queue
+        
+    # Create SQS client
     sqs = boto3.client('sqs')
-
-	#URL
-    queue = 'https://sqs.us-east-1.amazonaws.com/636938905002/restTestQueue/'
     
+    queue_url = 'https://sqs.us-east-1.amazonaws.com/636938905002/ruptest'
+    
+    # Receive message from SQS queue
     response = sqs.receive_message(
-        QueueUrl=queue,
+        QueueUrl=queue_url,
         AttributeNames=[
-            'All'
+            'SentTimestamp'
         ],
         MaxNumberOfMessages=1,
         MessageAttributeNames=[
             'All'
-        ]
+        ],
+        VisibilityTimeout=0,
+        WaitTimeSeconds=0
     )
     
-	#Checking if 
-    if('Messages' not in response):
-        iterate = 0
-    else:
-        iterate = len(response['Messages'])
-    
-    for i in range(iterate):
-        message = response['Messages'][i]
-        receipt_handle = message['ReceiptHandle']
-
-        # # Deletes messages from queue after it is read by LF2
-        del_response = sqs.delete_message(
-            QueueUrl=queue,
-            ReceiptHandle=receipt_handle
-        )
- 
-        location = message['Location']['StringValue']
-        cuisine = message['Categories']['StringValue']
-        phoneNumber = message['Phone_number']['StringValue']
-        
-        ids = []
-        #cuisine = 'indian'
-        url = 'https://search-restaurants-f3m3ryeapquwtywsuglhk7uvgu.us-east-1.es.amazonaws.com/restaurants/Restaurant/_search?q=' + cuisine
-        req = requests.post(url).json()
-    
-    
-    
-        for items in req['hits']['hits']:
-            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
-            table = dynamodb.Table('yelp-restaurants')
-            ids.append(items['_source']['RestaurantID'])
-        
-        output = fetchDataDynamoDB(table,  ids)
-        print(output)
-        
-		#Configuration for connecting and sending message via SNS
-        sns_client = boto3.client('sns')
-        sns_client.publish(
-             PhoneNumber=phoneNumber,
-           Message="Hi,you restaurants for "+cuisine+" are as follows: "+ output
-         )
-        
-        
-    return {
-            'statusCode': 200,
-            'body': json.dumps('Hello from Lambda2!')
-        }
-
    
-def fetchDataDynamoDB(table,ids):
-	if len(ids) <= 0:
-			return 'Couldn't find any result.'
-		op = ""
-		count = 1
-		print(ids)
-		for i in range(3):
-			try:
-				response = table.get_item(
-					Key={
-						'id': ids[i]
-					}
-				)
-			except ClientError as e:
-				print(e.response['Error']['Message'])
-			else:
-				print("GetItem succeeded:")
-			print('returnsed')
-			if len(response['Item']) >= 1 :
-				responseData1 = response['Item']
-				str1 = ""
-				for i in responseData1['location']:
-					str1+=i+" "
-				op = op + " " + str(count) + "." + responseData1['name'] + ", Location: " + str1
-				count += 1
-			
-		op = op + " Enjoy!"
-		return op
+    print(event)
+    print(event['Records'])
+    print(event['Records'][0]['messageAttributes'])
+    
+    
+    
+    print(response)
+    # message = response['Messages'][0]
+    
+    
+    receipt_handle = event['Records'][0]['receiptHandle']
+    # receipt_handle = message['ReceiptHandle']
+    
+    # Delete received message from queue
+    sqs.delete_message(
+        QueueUrl=queue_url,
+        ReceiptHandle=receipt_handle
+    )
+    
+    # print('Received and deleted message: %s' % message)
+    
+    msgAttrib = event['Records'][0]['messageAttributes']
+    # msgAttrib = message['MessageAttributes']
+    location = msgAttrib['Location']['stringValue']
+    cuisine = msgAttrib['Cuisine']['stringValue']
+    noofpeople = msgAttrib['NoOfPeople']['stringValue']
+    dtime = msgAttrib['DTime']['stringValue']
+    ddate = msgAttrib['DDate']['stringValue']
+    phoneno = msgAttrib['PhoneNo']['stringValue']
+    
+    url = 'https://search-restaurants-ha76texqossjbdrwxznviolaim.us-east-1.es.amazonaws.com/restaurants/_doc/_search?q=' + cuisine
+    esdata = requests.post(url)
+    esdjson = esdata.json()
+    
+    count = 0
+    dynamodb = boto3.resource('dynamodb', region_name='us-east-1', endpoint_url="https://dynamodb.us-east-1.amazonaws.com")
+    table = dynamodb.Table('yelp-restaurant')
+    
+    restaus = ""
+    for item in esdjson['hits']['hits']:
+        if count == 3:
+            break;
+        # businessIds.append(item['_source']['id'])
+        try:
+            respda = table.get_item(
+                Key={
+                    'id': item['_source']['id']
+                }
+            )
+        except ClientError as e:
+            print(e.response['Error']['Message'])
+        else:
+            if 'Item' in respda:
+                # print(respda['Item'])
+                count = count + 1
+                # print(respda['Item']['location'][0])
+                restaus = restaus + str(count) + " : " + respda['Item']['name'] + " ,located at  "+respda['Item']['location'][0] + " " +respda['Item']['location'][1] + " "
+        
+    
+    # print(restaus)
+                
+    
+    # # Create an SNS client
+    client = boto3.client("sns")
+    sndmsg = 'Hello! Here are my ' + cuisine + ' restaurant suggestions for ' + str(noofpeople) + ' people, for ' + str(ddate) + ' at ' + str(dtime) +'.' + restaus + ' Enjoy your meal!'
+    #sndmsg = 'hello Rupesh'
+    
+    # Send your sms message.
+    client.publish(
+        PhoneNumber= phoneno,
+        Message=sndmsg
+    )
+    
+    
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, decimal.Decimal):
+            if o % 1 > 0:
+                return float(o)
+            else:
+                return int(o)
+        return super(DecimalEncoder, self).default(o)
+
