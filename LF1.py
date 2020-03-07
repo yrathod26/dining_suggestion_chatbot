@@ -1,18 +1,15 @@
 import json
-import argparse
 import pprint
-import requests
+from botocore.vendored import requests
 import sys
 import urllib
-import datetime
+from datetime import datetime
+import dateutil
+import math
 import boto3
 import logging
 import os
 import time
-
-from boto3.dynamodb.conditions import Key, Attr
-from botocore.exceptions import ClientError
-from ast import literal_eval
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
@@ -22,160 +19,95 @@ def lambda_handler(event, context):
     os.environ['TZ'] = 'America/New_York'
     time.tzset()
     print(event)
-    return type_event(event)
+    return dispatch(event)
 
 
-def type_event(event_intent):
-    event_intent = event_intent['currentIntent']['name']
-    print(' ')
-    print(event_intent)
+def dispatch(intentRequest):
+    intentName = intentRequest['currentIntent']['name']
     
-    # event type to your bot's intent handlers
-    if event_intent == 'GreetingIntent':
-        return greetingIntent(event_intent)
-    elif event_intent == 'DiningSuggestionsIntent':
-        return diningSuggestionIntent(event_intent)
-    elif event_intent == 'ThankYouIntent':
-        return thankYouIntent(event_intent)
+    # Dispatch to your bot's intent handlers
+    if intentName == 'GreetingIntent':
+        return greetingIntent(intentRequest)
+    elif intentName == 'DiningSuggestionsIntent':
+        return diningSuggestionIntent(intentRequest)
+    elif intentName == 'ThankYouIntent':
+        return thankYouIntent(intentRequest)
 
-    raise Exception('Intent ' + event_intent + ' not supported')
+    raise Exception('Intent ' + intentName + ' not supported')
     
-def greetingIntent(event_intent):
-
-    #print("asdfghj")
+def greetingIntent(intentRequest):
     return {
         'dialogAction': {
             "type": "Close",
             "fulfillmentState": "Fulfilled",
             'message': {
                 'contentType': 'PlainText', 
-                'content': 'Hello, How can I help you?'}
+                'content': 'Hi there, how can I help?'}
         }
     }
     
-def thankYouIntent(event_intent):
+def thankYouIntent(intentRequest):
     return {
         'dialogAction': {
             "type": "Close",
             "fulfillmentState": "Fulfilled",
             'message': {
                 'contentType': 'PlainText', 
-                'content': 'Thank you for using our bot. It was my pleasure helping you.'}
+                'content': 'Thank you for using our service. It was pleasure helping you.'}
         }
     }    
 
 
-def diningSuggestionIntent(event_intent):
+def diningSuggestionIntent(intentRequest):
     
-    location = getSlot(event_intent)["dslocation"]
-    cuisine = getSlot(event_intent)["dscuisine"]
-    noofpeople = getSlot(event_intent)["dsnoofpeople"]
-    date = getSlot(event_intent)["dsdate"]
-    time = getSlot(event_intent)["dstime"]
-    phoneno = getSlot(event_intent)["dsphoneno"]
-    source = event_intent['invocationSource']
+    location = getSlot(intentRequest)["dslocation"]
+    cuisine = getSlot(intentRequest)["dscuisine"]
+    noofpeople = getSlot(intentRequest)["dsnoofpeople"]
+    date = getSlot(intentRequest)["dsdate"]
+    time = getSlot(intentRequest)["dstime"]
+    phoneno = getSlot(intentRequest)["dsphoneno"]
+    source = intentRequest['invocationSource']
     
     if source == 'DialogCodeHook':
-        slots = getSlot(event_intent)
+        slots = getSlot(intentRequest)
         
-        validationResult = input_validation(location, cuisine, noofpeople, date, time, phoneno)
+        validationResult = validateUInputs(location, cuisine, noofpeople, date, time, phoneno)
         
         if not validationResult['isValid']:
             slots[validationResult['violatedSlot']] = None
             
-            return elicitSlot(event_intent['sessionAttributes'],
-                               event_intent['currentIntent']['name'],
+            return elicitSlot(intentRequest['sessionAttributes'],
+                               intentRequest['currentIntent']['name'],
                                slots,
                                validationResult['violatedSlot'],
                                validationResult['message'])
                                
-        outputSessionAttributes = event_intent['sessionAttributes'] if event_intent['sessionAttributes'] is not None else {}
+        outputSessionAttributes = intentRequest['sessionAttributes'] if intentRequest['sessionAttributes'] is not None else {}
         
-
-        return delegate(outputSessionAttributes, getSlot(event_intent))
+        return delegate(outputSessionAttributes, getSlot(intentRequest))
     
-    if phoneno is not None : #After user enters phone number, Data is sent in SNS Queue.
-
-
-        #print(cuisine)
-        #print(phoneno)
-        data = {
-                        "term":cuisine,
-                        "location":location,
-                        "categories":cuisine,
-                        "Phone_number": phoneno,
-                        "peoplenum": noofpeople,
-                        "Time": time,
-                        "Dining_Date": date
-                }
-                    
-        messageId = SQS_request_start(data)
+    UData = {
+                    "location":location,
+                    "cuisine":cuisine,
+                    "noofpeople":noofpeople,
+                    "ddate": date,
+                    "dtime": time,
+                    "phoneno": phoneno,
+            }
+                
+    messageId = reqResSQS(UData)
     
     return {
         'dialogAction': {
             "type": "ElicitIntent",
             'message': {
                 'contentType': 'PlainText', 
-                'content': 'Just a minute. Your suggestions are on the way.'}
+                'content': 'You’re all set. Expect my suggestions shortly! Have a good day.'}
         }
     }    
     
-
-    
-def SQS_request_start(Data):
-    sqs = boto3.client('sqs')
-    queue_url = 'https://sqs.us-east-1.amazonaws.com/636938905002/restTestQueue'
-    delaySeconds = 5
-    #input all message attributes.
-    messageAttributes = {
-        'Term': {
-            'DataType': 'String',
-            'StringValue': Data['term']
-        },
-        'Location': {
-            'DataType': 'String',
-            'StringValue': Data['location']
-        },
-        'Categories': {
-            'DataType': 'String',
-            'StringValue': Data['categories']
-        },
-        "DiningTime": {
-            'DataType': "String",
-            'StringValue': Data['Time']
-        },
-        "Dining_Date": {
-            'DataType': "String",
-            'StringValue': Data['Dining_Date']
-        },
-        'PeopleNum': {
-            'DataType': 'Number',
-            'StringValue': Data['peoplenum']
-        },
-        'Phone_number': {
-            'DataType': 'Number',
-            'StringValue': Data['Phone_number']
-        }
-    }
-    
-    messageBody=('Recommendation for the food')
-    
-    #Send request to the queue.
-    response = sqs.send_message(
-        QueueUrl = queue_url,
-        DelaySeconds = delaySeconds,
-        MessageAttributes = messageAttributes,
-        MessageBody = messageBody
-        )
-            
-    #print ('send data to queue')
-    
-    # print(response['MessageId'])
-    
-    # return response['MessageId']
-
-def getSlot(event_intent):
-    return event_intent['currentIntent']['slots']    
+def getSlot(intentRequest):
+    return intentRequest['currentIntent']['slots']    
     
 
 def isValidDate(date):
@@ -198,36 +130,63 @@ def formatReturnMessage(pIsValid, pFailedSlot, pMessage):
         'message': {'contentType': 'PlainText', 'content': pMessage}
     } 
 
-def input_validation(location, cuisine, Nop, date, time, phoneNo):
+def validateUInputs(pLocation, pCuisine, pNoOfPeople, pDinningDate, pDinningTime, pPhoneNo):
     
     locations = ['new york', 'manhattan', 'brooklyn']
-    if location is not None and location.lower() not in locations:
+    if pLocation is not None and pLocation.lower() not in locations:
         return formatReturnMessage(False,
                                     'dslocation',
-                                    'Sorry, we do not have services in ' + location + '. Please enter locations only in New York.')  
+                                    'Sorry, our services are yet to reach in ' + pLocation + '. Please enter locations in New York.')  
 
-    cuisines = ['indian', 'korean','chinese', 'american','mexican']
-    if cuisine is not None and cuisine.lower() not in cuisines:
+    cuisines = ['indian', 'italian', 'french','chinese', 'american']
+    if pCuisine is not None and pCuisine.lower() not in cuisines:
         return formatReturnMessage(False,
                                     'dscuisine',
-                                    'We don\'t have cuisines like ' + cuisine + '. Choose something else.')                                      
+                                    'We don\'t offer cuisines like ' + pCuisine + '. Pick something else.')                                      
 
-    if Nop is not None:
-        Nop = int(Nop)
-        if Nop > 50 or Nop < 0:
+    if pNoOfPeople is not None:
+        pNoOfPeople = int(pNoOfPeople)
+        if pNoOfPeople > 50 or pNoOfPeople < 0:
             return formatReturnMessage(False,
                                       'dsnoofpeople',
-                                      'Sorry, there is sitting for only 1 - 50. Please enter valid number.')    
+                                      'Sorry, Restaurants offer ony 1 to 50 people seatings at a time. Please enter valid number.')    
 
-    if phoneNo is not None :
+    currdate = str(datetime.now()).split()
+    
+    if pDinningDate is not None:
+        if not isValidDate(pDinningDate):
+            return formatReturnMessage(False, 'dsdate', 'I did not understand the date format you used.Please use a valid date format.')
+        if currdate[0] > str(pDinningDate):
+            return formatReturnMessage(False, 'dsdate', 'Even I would love to time travel in the past. But can\'t.So Please enter date from today onwards.')   
 
-        if len(phoneNo)<= 11 :
-             return formatReturnMessage(False, 'dsphoneno', 'Please enter phone number in following format - +cc-xxx-xxx-xxxx') 
 
-        if (phoneNo[1:].isdigit() == False):
+    if pDinningTime is not None:
+
+        if len(pDinningTime) != 5:
+            return formatReturnMessage(False, 'dstime', 'Please enter time in correct format - HH:MM')
+    
+        hour, minute = pDinningTime.split(':')
+        hour = int(hour)
+        minute = int(minute)
+    
+        if math.isnan(hour) or math.isnan(minute):
+            return formatReturnMessage(False, 'dstime', 'Please enter time in correct format - HH:MM')
+    
+        if (hour < 8 or hour > 24) :
+            return formatReturnMessage(False, 'dstime', 'Our business hours are from 8 am to midnight. Can you specify a time during this range?')
+        
+        if (currdate[0] == str(pDinningDate) and (currdate[1] > str(pDinningTime) )):
+            return formatReturnMessage(False, 'dstime', 'You are late. Please select another time. ')
+
+    if pPhoneNo is not None :
+
+        if len(pPhoneNo)<= 11 :
+             return formatReturnMessage(False, 'dsphoneno', 'Please enter correct phone number with country code - +cc-xxx-xxx-xxxx') 
+
+        if (pPhoneNo[1:].isdigit() == False):
             return formatReturnMessage(False,
                                       'dsphoneno',
-                                      'Please enter phone number in following format - +cc-xxx-xxx-xxxx')
+                                      'Please enter correct phone number.Don\'t worry we wont spam you.')
                                        
     return formatReturnMessage(True, None, None)    
     
@@ -251,3 +210,47 @@ def delegate(pSessionAttributes, pSlots):
             'slots': pSlots
         }
     }
+
+
+
+def reqResSQS(pData):
+    sqs = boto3.client('sqs')
+    queue_url = '	https://sqs.us-east-1.amazonaws.com/636938905002/ruptest'
+    delaySeconds = 5
+    messageAttributes = {
+        'Location': {
+            'DataType': 'String',
+            'StringValue': pData['location']
+        },
+        'Cuisine': {
+            'DataType': 'String',
+            'StringValue': pData['cuisine']
+        },
+        'NoOfPeople': {
+            'DataType': 'String',
+            'StringValue': pData['noofpeople']
+        },
+        "DDate": {
+            'DataType': "String",
+            'StringValue': pData['ddate']
+        },
+        "DTime": {
+            'DataType': "String",
+            'StringValue': pData['dtime']
+        },
+        'PhoneNo': {
+            'DataType': 'String',
+            'StringValue': pData['phoneno']
+        },
+    }
+    
+    messageBody=('Recommendation for restaurants')
+    
+    response = sqs.send_message(
+        QueueUrl = queue_url,
+        DelaySeconds = delaySeconds,
+        MessageAttributes = messageAttributes,
+        MessageBody = messageBody
+        )
+
+    return response['MessageId']
