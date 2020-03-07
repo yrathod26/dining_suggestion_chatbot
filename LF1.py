@@ -138,7 +138,7 @@ def validateUInputs(pLocation, pCuisine, pNoOfPeople, pDinningDate, pDinningTime
                                     'dslocation',
                                     'Sorry, our services are yet to reach in ' + pLocation + '. Please enter locations in New York.')  
 
-    cuisines = ['indian', 'italian', 'french','chinese', 'american']
+    cuisines = ['indian', 'mexican', 'korean','chinese', 'american']
     if pCuisine is not None and pCuisine.lower() not in cuisines:
         return formatReturnMessage(False,
                                     'dscuisine',
